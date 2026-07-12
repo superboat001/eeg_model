@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -32,6 +33,7 @@ from eeg_training.metrics import (
     binary_classification_metrics,
     select_balanced_accuracy_threshold,
 )
+import eeg_training.metrics as metrics_module
 from eeg_training.modeling import load_model_module
 from eeg_training.runner import _physiology_weight, run_experiment
 
@@ -112,6 +114,51 @@ class TrainingFrameworkTests(unittest.TestCase):
         )
         self.assertGreater(threshold, 0.45)
         self.assertEqual(tuned["balanced_accuracy"], 1.0)
+
+    def test_roc_auc_handles_tied_scores(self) -> None:
+        metrics = binary_classification_metrics(
+            [0, 0, 1, 1], [0.1, 0.5, 0.5, 0.9]
+        )
+        self.assertAlmostEqual(metrics["roc_auc_ad"], 0.875)
+
+    def test_threshold_selection_matches_candidate_search_and_computes_auc_once(
+        self,
+    ) -> None:
+        labels = [0, 1, 0, 1, 0, 1, 0, 1]
+        scores = [0.1, 0.1, 0.2, 0.4, 0.4, 0.7, 0.8, 0.9]
+        unique_scores = sorted(set(scores))
+        candidates = {0.0, 0.5, 1.0, *unique_scores}
+        candidates.update(
+            (left + right) / 2.0
+            for left, right in zip(unique_scores, unique_scores[1:])
+        )
+        expected_threshold = 0.5
+        expected_metrics = None
+        expected_key = None
+        for threshold in sorted(candidates):
+            candidate_metrics = binary_classification_metrics(
+                labels, scores, threshold=threshold
+            )
+            sensitivity = candidate_metrics["sensitivity_ad"]
+            specificity = candidate_metrics["specificity_hc"]
+            self.assertIsNotNone(sensitivity)
+            self.assertIsNotNone(specificity)
+            key = (
+                candidate_metrics["balanced_accuracy"],
+                min(sensitivity, specificity),
+                -abs(threshold - 0.5),
+            )
+            if expected_key is None or key > expected_key:
+                expected_key = key
+                expected_threshold = threshold
+                expected_metrics = candidate_metrics
+
+        with patch.object(metrics_module, "_roc_auc", wraps=metrics_module._roc_auc) as auc:
+            threshold, tuned = select_balanced_accuracy_threshold(labels, scores)
+
+        self.assertEqual(threshold, expected_threshold)
+        self.assertEqual(tuned, expected_metrics)
+        self.assertEqual(auc.call_count, 1)
 
     def test_subject_split_has_no_overlap(self) -> None:
         records = []
