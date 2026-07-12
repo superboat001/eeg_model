@@ -1,0 +1,84 @@
+{
+  "schema_version": "3.0",
+  "experiment": {
+    "name": "eeg_hc_ad_independent_segments",
+    "output_root": "exp",
+    "seed": 2026,
+    "device": "auto",
+    "deterministic": true,
+    "amp": true,
+    "amp_dtype": "float16"
+  },
+  "data": {
+    "directory": "data/eeg/brainlat",
+    "metadata_file": "dataset_description.json",
+    "train_fraction": 0.7,
+    "validation_fraction": 0.15,
+    "test_fraction": 0.15,
+    "split_seed": 2026,
+    "batch_size": 64,
+    "eval_batch_size": 64,
+    "num_workers": 4,
+    "pin_memory": true
+  },
+  "model": {
+    "source_file": "model_design/eeg_hc_ad_model.py",
+    "config_class": "EEGModelConfig",
+    "class_name": "EEGSegmentClassifier",
+    "loss_class": "EEGMultiTaskLoss",
+    "parameters": {
+      "fir_kernel_size": 129,
+      "d_model": 48,
+      "segment_dim": 96,
+      "ssm_state_dim": 24,
+      "temporal_kernels": [7, 15, 31],
+      "temporal_stride": 4,
+      "local_kernel_size": 5,
+      "local_dilation": 2,
+      "attention_hidden": 32,
+      "quality_hidden": 64,
+      "dropout": 0.1,
+      "normalize_per_channel": true
+    },
+    "graph": {
+      "type": "standard_montage_knn",
+      "montage": "biosemi128",
+      "neighbors": 4
+    }
+  },
+  "loss": {
+    "segment_weight": 1.0,
+    "physiology_weight": 0.1,
+    "quality_weight": 0.0
+  },
+  "optimizer": {
+    "name": "adamw",
+    "learning_rate": 0.0003,
+    "weight_decay": 0.01,
+    "betas": [0.9, 0.999]
+  },
+  "scheduler": {
+    "name": "reduce_on_plateau",
+    "factor": 0.5,
+    "patience": 2,
+    "min_learning_rate": 0.000001
+  },
+  "training": {
+    "epochs": 30,
+    "max_grad_norm": 1.0,
+    "gradient_accumulation_steps": 1,
+    "loss_schedule": {
+      "classification_warmup_epochs": 5,
+      "physiology_ramp_epochs": 5,
+      "target_physiology_weight": 0.1
+    },
+    "early_stopping": {
+      "monitor": "subject_logit_mean_balanced_accuracy",
+      "mode": "max",
+      "tiebreaker": "segment_loss",
+      "start_epoch": 10,
+      "patience": 8,
+      "min_delta": 0.0
+    }
+  }
+}

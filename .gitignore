@@ -1,0 +1,42 @@
+# Python 缓存与构建产物
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+
+# 虚拟环境与工具缓存
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebook、IDE 与操作系统文件
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 密钥与本地覆盖配置
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/configs/*.local.json
+/configs/*.local.yaml
+/configs/*.local.yml
+
+# 本地数据：原始 EEG 与预处理后的数组均不进入 Git
+/data/raw/
+/data/eeg/
+
+# 训练运行产物：checkpoint、预测、日志、快照与后台任务状态
+/exp/*
+!/exp/.gitkeep
