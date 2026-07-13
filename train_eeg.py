@@ -40,6 +40,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="optional device override, for example cpu, cuda:0, or auto",
     )
+    parser.add_argument(
+        "--split-seed-start",
+        type=int,
+        default=None,
+        help="optional override for the first subject split seed",
+    )
+    parser.add_argument(
+        "--split-seed-count",
+        type=int,
+        default=None,
+        help="optional override for how many consecutive split seeds to run",
+    )
     action_group = parser.add_mutually_exclusive_group()
     action_group.add_argument(
         "--check",
@@ -65,6 +77,8 @@ def main() -> int:
             config_file=config_file,
             run_name=args.run_name,
             device_override=args.device,
+            split_seed_start=args.split_seed_start,
+            split_seed_count=args.split_seed_count,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
@@ -75,6 +89,8 @@ def main() -> int:
             config_file=config_file,
             run_name=args.run_name,
             device_override=args.device,
+            split_seed_start=args.split_seed_start,
+            split_seed_count=args.split_seed_count,
         )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0 if summary["status"] == "sanity_overfit_passed" else 2
@@ -84,22 +100,21 @@ def main() -> int:
         config_file=config_file,
         run_name=args.run_name,
         device_override=args.device,
+        split_seed_start=args.split_seed_start,
+        split_seed_count=args.split_seed_count,
     )
     print(
         json.dumps(
             {
                 "status": summary["status"],
                 "run_directory": summary["run_directory"],
-                "best_epoch": summary["best_epoch"],
-                "test_fixed_threshold_metrics": {
-                    name: summary["final_metrics"]["test"][name]
-                    for name in (
-                        "segment",
-                        "subject_majority_vote",
-                        "subject_logit_mean",
-                    )
-                },
-                "test_validation_tuned_metrics": summary["final_metrics"][
+                "split_seed_start": summary["split_seed_start"],
+                "split_seed_count": summary["split_seed_count"],
+                "split_seeds": summary["split_seeds"],
+                "aggregate_test_fixed_threshold_metrics": summary["final_metrics"][
+                    "test"
+                ],
+                "aggregate_test_validation_tuned_metrics": summary["final_metrics"][
                     "test_tuned_threshold"
                 ],
             },

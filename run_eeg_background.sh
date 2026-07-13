@@ -21,6 +21,7 @@ Usage:
 Examples:
   ./run_eeg_background.sh
   ./run_eeg_background.sh start --device cuda:0 --run-name segments_v3
+  ./run_eeg_background.sh start --split-seed-start 2030 --split-seed-count 10
   ./run_eeg_background.sh sanity --device cuda:0
   ./run_eeg_background.sh status
   ./run_eeg_background.sh tail 120

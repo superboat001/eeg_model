@@ -100,12 +100,19 @@ def create_experiment(
     data_directory: Path,
     model_source: Path,
     training_sources: Sequence[Path],
+    root: Path | None = None,
+    training_source_root: Path | None = None,
 ) -> ExperimentPaths:
     """Create one run directory and copy all reproducibility inputs into it."""
 
-    exp_root = project_root / "exp"
-    exp_root.mkdir(parents=True, exist_ok=True)
-    root = _unique_run_directory(exp_root, experiment_name)
+    if root is None:
+        exp_root = project_root / "exp"
+        exp_root.mkdir(parents=True, exist_ok=True)
+        root = _unique_run_directory(exp_root, experiment_name)
+    else:
+        root = root.resolve()
+        root.parent.mkdir(parents=True, exist_ok=True)
+        root.mkdir(parents=False, exist_ok=False)
     paths = ExperimentPaths(
         root=root,
         checkpoints=root / "checkpoints",
@@ -160,10 +167,15 @@ def create_experiment(
             "preprocessing_json",
         )
 
+    source_root = (
+        project_root.resolve()
+        if training_source_root is None
+        else training_source_root.resolve()
+    )
     for source in training_sources:
         source = source.resolve()
         try:
-            relative = source.relative_to(project_root.resolve())
+            relative = source.relative_to(source_root)
         except ValueError:
             relative = Path(source.name)
         snapshot(

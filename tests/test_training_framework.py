@@ -34,8 +34,15 @@ from eeg_training.metrics import (
     select_balanced_accuracy_threshold,
 )
 import eeg_training.metrics as metrics_module
+import eeg_training.runner as runner_module
 from eeg_training.modeling import load_model_module
-from eeg_training.runner import _physiology_weight, run_experiment
+from eeg_training.runner import (
+    DEFAULTS,
+    _aggregate_numeric_metrics,
+    _physiology_weight,
+    _split_seed_sequence,
+    run_experiment,
+)
 
 
 class _TinySegmentModel(torch.nn.Module):
@@ -100,6 +107,23 @@ def _record(
 
 
 class TrainingFrameworkTests(unittest.TestCase):
+    def test_multi_split_defaults_and_metric_aggregation(self) -> None:
+        self.assertEqual(DEFAULTS["data"]["split_seed_count"], 10)
+        self.assertEqual(_split_seed_sequence(DEFAULTS), list(range(2026, 2036)))
+        aggregate = _aggregate_numeric_metrics(
+            [
+                {"final_metrics": {"test": {"balanced_accuracy": 0.6}}},
+                {"final_metrics": {"test": {"balanced_accuracy": 0.8}}},
+            ],
+            "final_metrics",
+        )
+        metric = aggregate["test"]["balanced_accuracy"]
+        self.assertEqual(metric["n"], 2)
+        self.assertAlmostEqual(metric["mean"], 0.7)
+        self.assertAlmostEqual(metric["std"], 2**0.5 / 10)
+        self.assertEqual(metric["min"], 0.6)
+        self.assertEqual(metric["max"], 0.8)
+
     def test_binary_metrics(self) -> None:
         metrics = binary_classification_metrics(
             [0, 0, 1, 1], [0.1, 0.7, 0.8, 0.9]
@@ -565,6 +589,8 @@ class EEGMultiTaskLoss(nn.Module):
                     "train_fraction": 1 / 3,
                     "validation_fraction": 1 / 3,
                     "test_fraction": 1 / 3,
+                    "split_seed_start": 3100,
+                    "split_seed_count": 2,
                     "batch_size": 4,
                     "eval_batch_size": 4,
                     "num_workers": 0,
@@ -601,14 +627,45 @@ class EEGMultiTaskLoss(nn.Module):
             }
             config_file = config_directory / "toy.json"
             config_file.write_text(json.dumps(config), encoding="utf-8")
-            summary = run_experiment(project, config_file)
-            run_directory = Path(summary["run_directory"])
+            training_source = project / "frozen_training_source.py"
+            training_source.write_text("ORIGINAL = True\n", encoding="utf-8")
+            original_train = runner_module._train
+            train_calls = 0
+
+            def train_then_mutate_live_inputs(prepared, paths, logger):
+                nonlocal train_calls
+                result = original_train(prepared, paths, logger)
+                train_calls += 1
+                if train_calls == 1:
+                    config_file.write_text("{broken json", encoding="utf-8")
+                    model_source.write_text(
+                        "raise RuntimeError('live model source was reused')\n",
+                        encoding="utf-8",
+                    )
+                    training_source.write_text("ORIGINAL = False\n", encoding="utf-8")
+                return result
+
+            with (
+                patch.object(
+                    runner_module,
+                    "_training_source_files",
+                    return_value=[training_source],
+                ),
+                patch.object(
+                    runner_module,
+                    "_train",
+                    side_effect=train_then_mutate_live_inputs,
+                ),
+            ):
+                summary = run_experiment(project, config_file)
+            aggregate_directory = Path(summary["run_directory"])
             self.assertIn(summary["status"], {"completed", "completed_with_warning"})
-            self.assertEqual(summary["data"]["training_unit"], "independent_segment")
-            self.assertEqual(summary["data"]["train_segments_per_epoch"], 12)
-            self.assertTrue((run_directory / "checkpoints" / "best.pt").is_file())
+            self.assertEqual(summary["split_seed_start"], 3100)
+            self.assertEqual(summary["split_seed_count"], 2)
+            self.assertEqual(summary["split_seeds"], [3100, 3101])
+            self.assertEqual(train_calls, 2)
             self.assertTrue(
-                (run_directory / "metrics" / "coverage.jsonl").is_file()
+                (aggregate_directory / "metrics" / "aggregate_final_metrics.json").is_file()
             )
 
             prediction_files = [
@@ -619,8 +676,59 @@ class EEGMultiTaskLoss(nn.Module):
                 "test_subject_majority_vote.csv",
                 "test_subject_logit_mean.csv",
             ]
-            for filename in prediction_files:
-                self.assertTrue((run_directory / "predictions" / filename).is_file())
+            split_subjects = []
+            for expected_seed, split_run in zip(
+                summary["split_seeds"], summary["split_runs"]
+            ):
+                run_directory = Path(split_run["run_directory"])
+                child_summary = json.loads(
+                    (run_directory / "summary.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(child_summary["split_seed"], expected_seed)
+                self.assertEqual(
+                    child_summary["data"]["training_unit"], "independent_segment"
+                )
+                self.assertEqual(
+                    child_summary["data"]["train_segments_per_epoch"], 12
+                )
+                self.assertTrue((run_directory / "checkpoints" / "best.pt").is_file())
+                self.assertTrue(
+                    (run_directory / "metrics" / "coverage.jsonl").is_file()
+                )
+                for filename in prediction_files:
+                    self.assertTrue(
+                        (run_directory / "predictions" / filename).is_file()
+                    )
+                self.assertIn(
+                    "class EEGSegmentClassifier",
+                    (
+                        run_directory / "snapshots" / "model_source" / "toy_model.py"
+                    ).read_text(encoding="utf-8"),
+                )
+                self.assertEqual(
+                    (
+                        run_directory
+                        / "snapshots"
+                        / "training_code"
+                        / training_source.name
+                    ).read_text(encoding="utf-8"),
+                    "ORIGINAL = True\n",
+                )
+                split_manifest_value = json.loads(
+                    (run_directory / "splits.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(split_manifest_value["seed"], expected_seed)
+                split_subjects.append(
+                    tuple(
+                        subject["subject_id"]
+                        for subject in split_manifest_value["splits"]["train"][
+                            "subjects"
+                        ]
+                    )
+                )
+            self.assertNotEqual(split_subjects[0], split_subjects[1])
+
+            run_directory = Path(summary["split_runs"][0]["run_directory"])
             with (
                 run_directory / "predictions" / "test_segments.csv"
             ).open(encoding="utf-8", newline="") as handle:
@@ -642,6 +750,12 @@ class EEGMultiTaskLoss(nn.Module):
                 set(final_metrics["thresholds_selected_on_validation"]),
                 {"segments", "subject_majority_vote", "subject_logit_mean"},
             )
+            aggregate_balanced_accuracy = final_metrics["test"]["segment"][
+                "balanced_accuracy"
+            ]
+            self.assertEqual(aggregate_balanced_accuracy["n"], 2)
+            self.assertEqual(aggregate_balanced_accuracy["mean"], 1.0)
+            self.assertEqual(aggregate_balanced_accuracy["std"], 0.0)
 
 
 if __name__ == "__main__":

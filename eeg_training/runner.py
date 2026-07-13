@@ -70,7 +70,8 @@ DEFAULTS: dict[str, Any] = {
         "train_fraction": 0.70,
         "validation_fraction": 0.15,
         "test_fraction": 0.15,
-        "split_seed": 2026,
+        "split_seed_start": 2026,
+        "split_seed_count": 10,
         "batch_size": 64,
         "eval_batch_size": 64,
         "num_workers": 4,
@@ -136,6 +137,7 @@ class PreparedConfiguration:
     model_source: Path
     splits: dict[str, list[SubjectRecord]]
     split_description: dict[str, Any]
+    split_seed: int
 
 
 def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -221,7 +223,8 @@ def _validate_config_values(config: Mapping[str, Any]) -> None:
     ]
     if not math.isclose(sum(fractions), 1.0, rel_tol=0.0, abs_tol=1.0e-8):
         raise ValueError("data split fractions must sum to 1")
-    _positive_int(data["split_seed"], "data.split_seed", allow_zero=True)
+    _positive_int(data["split_seed_start"], "data.split_seed_start", allow_zero=True)
+    _positive_int(data["split_seed_count"], "data.split_seed_count")
 
     allowed_loss_keys = {"segment_weight", "physiology_weight", "quality_weight"}
     unknown_loss_keys = sorted(set(loss).difference(allowed_loss_keys))
@@ -333,6 +336,8 @@ def _prepare_configuration(
     config_file: Path,
     run_name: str | None,
     device_override: str | None,
+    split_seed_start_override: int | None = None,
+    split_seed_count_override: int | None = None,
 ) -> PreparedConfiguration:
     project_root = project_root.resolve()
     config_file = config_file.resolve()
@@ -349,7 +354,12 @@ def _prepare_configuration(
         config["experiment"]["name"] = run_name
     if device_override is not None:
         config["experiment"]["device"] = device_override
+    if split_seed_start_override is not None:
+        config["data"]["split_seed_start"] = split_seed_start_override
+    if split_seed_count_override is not None:
+        config["data"]["split_seed_count"] = split_seed_count_override
     _validate_config_values(config)
+    split_seed = int(config["data"]["split_seed_start"])
 
     data_directory = _project_path(project_root, str(config["data"]["directory"]))
     metadata_value = Path(str(config["data"]["metadata_file"]))
@@ -367,10 +377,8 @@ def _prepare_configuration(
         float(config["data"]["validation_fraction"]),
         float(config["data"]["test_fraction"]),
     )
-    splits = stratified_subject_split(
-        data_info.records, fractions, int(config["data"]["split_seed"])
-    )
-    description = split_manifest(splits, fractions, int(config["data"]["split_seed"]))
+    splits = stratified_subject_split(data_info.records, fractions, split_seed)
+    description = split_manifest(splits, fractions, split_seed)
     config["resolved"] = {
         "project_root": str(project_root),
         "config_file": str(config_file),
@@ -385,6 +393,9 @@ def _prepare_configuration(
         "sampling_rate_hz": data_info.sampling_rate,
         "class_mapping": {"HC": 0, "AD": 1},
         "split_unit": "subject",
+        "split_seed": split_seed,
+        "split_seed_start": int(config["data"]["split_seed_start"]),
+        "split_seed_count": int(config["data"]["split_seed_count"]),
         "training_unit": "segment",
         "model_input": "flat independent segments [N, C, T]",
         "subject_aggregations": ["majority_vote", "logit_mean"],
@@ -397,6 +408,7 @@ def _prepare_configuration(
         model_source=model_source,
         splits=splits,
         split_description=description,
+        split_seed=split_seed,
     )
 
 
@@ -414,15 +426,182 @@ def _segment_sampling_summary(
     }
 
 
+def _split_seed_sequence(config: Mapping[str, Any]) -> list[int]:
+    data = config["data"]
+    start = int(data["split_seed_start"])
+    count = int(data["split_seed_count"])
+    return list(range(start, start + count))
+
+
+def _configuration_for_split_seed(
+    base: PreparedConfiguration,
+    split_seed: int,
+    *,
+    config_file: Path,
+    model_source: Path,
+) -> PreparedConfiguration:
+    """Derive one split from inputs frozen before the multi-split run starts."""
+
+    _positive_int(split_seed, "split_seed", allow_zero=True)
+    config = copy.deepcopy(base.config)
+    fractions = (
+        float(config["data"]["train_fraction"]),
+        float(config["data"]["validation_fraction"]),
+        float(config["data"]["test_fraction"]),
+    )
+    splits = stratified_subject_split(base.data_info.records, fractions, split_seed)
+    description = split_manifest(splits, fractions, split_seed)
+    config["resolved"]["split_seed"] = split_seed
+    config["resolved"]["frozen_config_file"] = str(config_file.resolve())
+    config["resolved"]["frozen_model_source_file"] = str(model_source.resolve())
+    return PreparedConfiguration(
+        project_root=base.project_root,
+        config_file=config_file.resolve(),
+        config=config,
+        data_info=base.data_info,
+        model_source=model_source.resolve(),
+        splits=splits,
+        split_description=description,
+        split_seed=split_seed,
+    )
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
+
+
+def _flatten_numeric_leaves(
+    value: Any, prefix: tuple[str, ...] = ()
+) -> dict[tuple[str, ...], float]:
+    if isinstance(value, Mapping):
+        leaves: dict[tuple[str, ...], float] = {}
+        for key, item in value.items():
+            leaves.update(_flatten_numeric_leaves(item, (*prefix, str(key))))
+        return leaves
+    if _is_finite_number(value):
+        return {prefix: float(value)}
+    return {}
+
+
+def _insert_nested_metric(
+    destination: dict[str, Any], path: tuple[str, ...], value: Mapping[str, Any]
+) -> None:
+    current = destination
+    for key in path[:-1]:
+        current = current.setdefault(key, {})
+    current[path[-1]] = dict(value)
+
+
+def _summarize_values(values: Sequence[float]) -> dict[str, Any]:
+    if not values:
+        raise ValueError("cannot summarize an empty numeric series")
+    n_values = len(values)
+    mean = sum(values) / n_values
+    if n_values > 1:
+        variance = sum((value - mean) ** 2 for value in values) / (n_values - 1)
+        std = math.sqrt(variance)
+    else:
+        std = 0.0
+    return {
+        "mean": mean,
+        "std": std,
+        "min": min(values),
+        "max": max(values),
+        "n": n_values,
+    }
+
+
+def _aggregate_numeric_metrics(
+    summaries: Sequence[Mapping[str, Any]], field: str
+) -> dict[str, Any]:
+    collected: dict[tuple[str, ...], list[float]] = {}
+    for summary in summaries:
+        for path, value in _flatten_numeric_leaves(summary[field]).items():
+            collected.setdefault(path, []).append(value)
+
+    aggregated: dict[str, Any] = {}
+    for path in sorted(collected):
+        _insert_nested_metric(aggregated, path, _summarize_values(collected[path]))
+    return aggregated
+
+
+def _multi_split_summary(
+    paths: ExperimentPaths,
+    summaries: Sequence[Mapping[str, Any]],
+    started: float,
+) -> dict[str, Any]:
+    if not summaries:
+        raise RuntimeError("multi-split run produced no split summaries")
+    warnings = [
+        {"split_seed": int(summary["split_seed"]), "warning": warning}
+        for summary in summaries
+        for warning in summary.get("warnings", [])
+    ]
+    statuses = {str(summary["status"]) for summary in summaries}
+    completed_statuses = {"completed", "completed_with_warning"}
+    status = (
+        "completed_with_warning"
+        if warnings or statuses.difference({"completed"})
+        else "completed"
+    )
+    if statuses.difference(completed_statuses):
+        status = "failed"
+    split_seeds = [int(summary["split_seed"]) for summary in summaries]
+    return {
+        "status": status,
+        "completed_at": utc_now(),
+        "run_directory": str(paths.root),
+        "elapsed_seconds": time.monotonic() - started,
+        "split_seed_start": split_seeds[0],
+        "split_seed_count": len(split_seeds),
+        "split_seeds": split_seeds,
+        "warnings": warnings,
+        "split_runs": [
+            {
+                "split_seed": int(summary["split_seed"]),
+                "status": summary["status"],
+                "run_directory": summary["run_directory"],
+                "summary": str(Path(summary["run_directory"]) / "summary.json"),
+                "best_epoch": summary["best_epoch"],
+                "epochs_completed": summary["epochs_completed"],
+                "elapsed_seconds": summary["elapsed_seconds"],
+                "warnings": summary.get("warnings", []),
+            }
+            for summary in summaries
+        ],
+        "final_metrics": _aggregate_numeric_metrics(summaries, "final_metrics"),
+        "run_metrics": _aggregate_numeric_metrics(summaries, "run_metrics"),
+        "artifacts": {
+            "aggregate_final_metrics": "metrics/aggregate_final_metrics.json",
+            "aggregate_run_metrics": "metrics/aggregate_run_metrics.json",
+            "split_summaries": "metrics/split_summaries.json",
+            "snapshot_manifest": "snapshots/manifest.json",
+        },
+    }
+
+
 def check_configuration(
     project_root: Path,
     config_file: Path,
     run_name: str | None = None,
     device_override: str | None = None,
+    split_seed_start: int | None = None,
+    split_seed_count: int | None = None,
 ) -> dict[str, Any]:
     """Validate data/model/configuration without creating an experiment folder."""
 
-    prepared = _prepare_configuration(project_root, config_file, run_name, device_override)
+    prepared = _prepare_configuration(
+        project_root,
+        config_file,
+        run_name,
+        device_override,
+        split_seed_start,
+        split_seed_count,
+    )
     model_module = load_model_module(prepared.model_source)
     edge_index, edge_weight, graph_description = build_graph(
         prepared.config["model"]["graph"],
@@ -467,6 +646,10 @@ def check_configuration(
     return {
         "status": "valid",
         "config_file": str(prepared.config_file),
+        "split_seed_start": int(prepared.config["data"]["split_seed_start"]),
+        "split_seed_count": int(prepared.config["data"]["split_seed_count"]),
+        "split_seeds": _split_seed_sequence(prepared.config),
+        "checked_split_seed": prepared.split_seed,
         "dataset": prepared.config["resolved"],
         "splits": split_summary,
         "graph": graph_summary,
@@ -1025,6 +1208,7 @@ def _train(
         "status": completion_status,
         "completed_at": utc_now(),
         "run_directory": str(paths.root),
+        "split_seed": prepared.split_seed,
         "best_epoch": best_epoch,
         "epochs_completed": last_epoch,
         "elapsed_seconds": elapsed,
@@ -1065,6 +1249,19 @@ def _train(
             "split_manifest": "splits.json",
             "snapshot_manifest": "snapshots/manifest.json",
         },
+    }
+    summary["run_metrics"] = {
+        "best_epoch": best_epoch,
+        "epochs_completed": last_epoch,
+        "elapsed_seconds": elapsed,
+        "train_subjects": summary["data"]["train_subjects"],
+        "validation_subjects": summary["data"]["validation_subjects"],
+        "test_subjects": summary["data"]["test_subjects"],
+        "train_segments_per_epoch": summary["data"]["train_segments_per_epoch"],
+        "validation_segments_per_epoch": summary["data"][
+            "validation_segments_per_epoch"
+        ],
+        "test_segments": summary["data"]["test_segments"],
     }
     atomic_write_json(paths.root / "summary.json", summary)
     atomic_write_json(paths.status_file, summary)
@@ -1264,10 +1461,19 @@ def run_sanity_overfit(
     config_file: Path,
     run_name: str | None = None,
     device_override: str | None = None,
+    split_seed_start: int | None = None,
+    split_seed_count: int | None = None,
 ) -> dict[str, Any]:
     """Try to memorize a fixed set of independent real segments."""
 
-    prepared = _prepare_configuration(project_root, config_file, run_name, device_override)
+    prepared = _prepare_configuration(
+        project_root,
+        config_file,
+        run_name,
+        device_override,
+        split_seed_start,
+        split_seed_count,
+    )
     base_name = str(prepared.config["experiment"]["name"])
     prepared.config["experiment"]["name"] = f"{base_name}_sanity_overfit"
     paths = create_experiment(
@@ -1303,23 +1509,148 @@ def run_experiment(
     config_file: Path,
     run_name: str | None = None,
     device_override: str | None = None,
+    split_seed_start: int | None = None,
+    split_seed_count: int | None = None,
 ) -> dict[str, Any]:
-    """Create a self-contained run folder, train, and evaluate the best model."""
+    """Train one full experiment per consecutive split seed, then aggregate metrics."""
 
-    prepared = _prepare_configuration(project_root, config_file, run_name, device_override)
+    initial_prepared = _prepare_configuration(
+        project_root,
+        config_file,
+        run_name,
+        device_override,
+        split_seed_start,
+        split_seed_count,
+    )
+    split_seeds = _split_seed_sequence(initial_prepared.config)
+    base_name = str(initial_prepared.config["experiment"]["name"])
+    parent_config = copy.deepcopy(initial_prepared.config)
+    parent_config["resolved"].pop("split_seed", None)
+    parent_config["resolved"]["split_seeds"] = split_seeds
+    parent_config["resolved"]["multi_split"] = True
+    training_sources = _training_source_files(initial_prepared.project_root)
+    if not training_sources:
+        raise RuntimeError("multi-split training source list is empty")
     paths = create_experiment(
-        project_root=prepared.project_root,
-        experiment_name=str(prepared.config["experiment"]["name"]),
-        original_config=prepared.config_file,
-        resolved_config=prepared.config,
-        data_directory=prepared.data_info.data_directory,
-        model_source=prepared.model_source,
-        training_sources=_training_source_files(prepared.project_root),
+        project_root=initial_prepared.project_root,
+        experiment_name=f"{base_name}_multi_split",
+        original_config=initial_prepared.config_file,
+        resolved_config=parent_config,
+        data_directory=initial_prepared.data_info.data_directory,
+        model_source=initial_prepared.model_source,
+        training_sources=training_sources,
+    )
+    frozen_config_file = paths.root / "config" / "input_config.json"
+    frozen_data_directory = paths.root / "snapshots" / "data_json"
+    frozen_training_root = paths.root / "snapshots" / "training_code"
+    frozen_training_sources = sorted(
+        source for source in frozen_training_root.rglob("*.py") if source.is_file()
     )
     logger = configure_logger(paths.logs / "train.log")
-    logger.info("Created experiment directory %s", paths.root)
+    logger.info(
+        "Created multi-split experiment directory %s for seeds %s",
+        paths.root,
+        ", ".join(str(seed) for seed in split_seeds),
+    )
+    started = time.monotonic()
+    summaries: list[dict[str, Any]] = []
+    atomic_write_json(
+        paths.status_file,
+        {
+            "status": "running",
+            "started_at": utc_now(),
+            "run_directory": str(paths.root),
+            "split_seed_start": split_seeds[0],
+            "split_seed_count": len(split_seeds),
+            "split_seeds": split_seeds,
+            "completed_splits": 0,
+        },
+    )
+
     try:
-        return _train(prepared, paths, logger)
+        for index, split_seed in enumerate(split_seeds, start=1):
+            prepared = _configuration_for_split_seed(
+                initial_prepared,
+                split_seed,
+                config_file=frozen_config_file,
+                model_source=paths.model_snapshot,
+            )
+            prepared.config["experiment"]["name"] = f"{base_name}_split_seed_{split_seed}"
+            child_paths = create_experiment(
+                project_root=prepared.project_root,
+                experiment_name=str(prepared.config["experiment"]["name"]),
+                original_config=prepared.config_file,
+                resolved_config=prepared.config,
+                data_directory=frozen_data_directory,
+                model_source=prepared.model_source,
+                training_sources=frozen_training_sources,
+                root=paths.root / f"split_seed_{split_seed}",
+                training_source_root=frozen_training_root,
+            )
+            child_logger = configure_logger(child_paths.logs / "train.log")
+            logger.info(
+                "Starting split %d/%d with split_seed=%d at %s",
+                index,
+                len(split_seeds),
+                split_seed,
+                child_paths.root,
+            )
+            try:
+                summary = _train(prepared, child_paths, child_logger)
+            except BaseException as error:
+                failure_traceback = traceback.format_exc()
+                (child_paths.logs / "error.log").write_text(
+                    failure_traceback, encoding="utf-8"
+                )
+                status = (
+                    "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+                )
+                atomic_write_json(
+                    child_paths.status_file,
+                    {
+                        "status": status,
+                        "failed_at": utc_now(),
+                        "run_directory": str(child_paths.root),
+                        "split_seed": split_seed,
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                        "traceback": "logs/error.log",
+                    },
+                )
+                child_logger.exception("Experiment %s: %s", status, error)
+                raise
+            summaries.append(summary)
+            atomic_write_json(paths.metrics / "split_summaries.json", summaries)
+            atomic_write_json(
+                paths.status_file,
+                {
+                    "status": "running",
+                    "updated_at": utc_now(),
+                    "run_directory": str(paths.root),
+                    "split_seed_start": split_seeds[0],
+                    "split_seed_count": len(split_seeds),
+                    "split_seeds": split_seeds,
+                    "completed_splits": len(summaries),
+                    "current_split_seed": split_seed,
+                },
+            )
+
+        summary = _multi_split_summary(paths, summaries, started)
+        atomic_write_json(
+            paths.metrics / "aggregate_final_metrics.json", summary["final_metrics"]
+        )
+        atomic_write_json(
+            paths.metrics / "aggregate_run_metrics.json", summary["run_metrics"]
+        )
+        atomic_write_json(paths.root / "summary.json", summary)
+        atomic_write_json(paths.status_file, summary)
+        logger.info(
+            "Multi-split training %s. Completed %d split seeds; results=%s",
+            summary["status"],
+            len(split_seeds),
+            paths.root,
+        )
+        return summary
     except BaseException as error:
         failure_traceback = traceback.format_exc()
         (paths.logs / "error.log").write_text(failure_traceback, encoding="utf-8")
@@ -1330,10 +1661,13 @@ def run_experiment(
                 "status": status,
                 "failed_at": utc_now(),
                 "run_directory": str(paths.root),
+                "split_seed_start": split_seeds[0],
+                "split_seed_count": len(split_seeds),
+                "completed_splits": len(summaries),
                 "error_type": type(error).__name__,
                 "error": str(error),
                 "traceback": "logs/error.log",
             },
         )
-        logger.exception("Experiment %s: %s", status, error)
+        logger.exception("Multi-split experiment %s: %s", status, error)
         raise

@@ -19,14 +19,21 @@ conda run -n cgz python train_eeg.py --check
 # 2. 在固定的小规模真实片段集合上做过拟合诊断
 conda run -n cgz python train_eeg.py --sanity-overfit
 
-# 3. 正式训练
+# 3. 正式训练；默认依次使用 2026–2035 共 10 个数据划分种子
 conda run -n cgz python train_eeg.py
+
+# 覆盖随机数种子的起点和数量
+conda run -n cgz python train_eeg.py \
+  --split-seed-start 2030 --split-seed-count 5
 ```
 
-可以用 `--run-name` 和 `--device cuda:0` 覆盖实验名与设备。SSH 后台运行方式：
+可以用 `--run-name` 和 `--device cuda:0` 覆盖实验名与设备。正式训练会针对每个
+数据划分分别重新初始化模型、训练和测试，最后汇总所有数值指标。SSH 后台运行
+方式：
 
 ```bash
 ./run_eeg_background.sh
+./run_eeg_background.sh start --split-seed-start 2030 --split-seed-count 5
 ./run_eeg_background.sh sanity
 ./run_eeg_background.sh status
 ./run_eeg_background.sh tail
@@ -35,7 +42,9 @@ conda run -n cgz python train_eeg.py
 ## 数据划分与片段输入
 
 数据仍先按被试划分，以阻止同一被试的片段跨越训练、验证和测试集。划分按
-“诊断 × 机构”联合分层，默认结果为：
+“诊断 × 机构”联合分层。默认从 `split_seed_start=2026` 开始使用 10 个连续
+种子，即 2026–2035；每个种子产生一套独立的训练、验证和测试划分，并完成一次
+完整训练。下表是种子 2026 的结果：
 
 | split | 被试数 | 片段数 |
 |---|---:|---:|
@@ -68,6 +77,10 @@ conda run -n cgz python train_eeg.py
 每轮都会同时计算片段级、被试多数投票和被试 logits 平均三组指标，但后两组只
 用于评估/选模，不进入训练图，也不会把同一被试的片段联合送入模型。
 
+多划分实验开始时会先冻结输入配置、模型源码、预处理 JSON 和训练源码。之后的
+所有子实验都从这份父实验快照派生；即使长时间训练期间这些配置或源码在工作区
+发生变化，也不会让不同划分使用不同版本的配置或代码。
+
 ## 三类预测结果
 
 最佳 checkpoint 会在验证集和测试集各输出三张表：
@@ -82,41 +95,45 @@ conda run -n cgz python train_eeg.py
 
 框架针对上述三类结果分别在验证集选择最大化 balanced accuracy 的阈值，并把
 对应阈值冻结后用于测试集。CSV 同时保留固定 0.5 的结果和验证集阈值结果；
-`metrics/final_metrics.json` 同时报告两套指标。
+每个子实验的 `metrics/final_metrics.json` 同时报告两套指标。父实验会对所有
+子实验中的数值指标计算均值、样本标准差、最小值、最大值和有效样本数，字段分别
+为 `mean`、`std`、`min`、`max` 和 `n`。
 
 ## 结果目录
 
 ```text
-exp/YYYYMMDD_HHMMSS_eeg_hc_ad_independent_segments/
+exp/YYYYMMDD_HHMMSS_eeg_hc_ad_independent_segments_multi_split/
 ├── config/
 ├── snapshots/
-│   ├── data_json/                 # 预处理 JSON 快照
-│   ├── model_source/              # 本次实际加载的模型源码快照
-│   ├── training_code/             # 训练框架快照
+│   ├── data_json/                         # 整组实验冻结的预处理 JSON
+│   ├── model_source/                      # 整组实验冻结的模型源码
+│   ├── training_code/                     # 整组实验冻结的训练源码
 │   └── manifest.json
-├── checkpoints/best.pt
-├── checkpoints/last.pt
-├── metrics/history.csv
-├── metrics/history.jsonl
-├── metrics/coverage.jsonl         # 全量覆盖、顺序哈希、重复/缺失数
-├── metrics/final_metrics.json
-├── predictions/
-│   ├── validation_segments.csv
-│   ├── validation_subject_majority_vote.csv
-│   ├── validation_subject_logit_mean.csv
-│   ├── test_segments.csv
-│   ├── test_subject_majority_vote.csv
-│   └── test_subject_logit_mean.csv
-├── artifacts/channel_graph.json
-├── artifacts/class_weights.json   # 按片段数计算
+├── metrics/
+│   ├── aggregate_final_metrics.json       # 跨划分综合指标
+│   ├── aggregate_run_metrics.json
+│   └── split_summaries.json               # 各子实验完整 summary
 ├── logs/train.log
-├── environment.json
-├── splits.json
 ├── status.json
-└── summary.json
+├── summary.json
+├── split_seed_2026/
+│   ├── checkpoints/best.pt
+│   ├── checkpoints/last.pt
+│   ├── metrics/history.csv
+│   ├── metrics/history.jsonl
+│   ├── metrics/coverage.jsonl             # 全量覆盖、顺序哈希、重复/缺失数
+│   ├── metrics/final_metrics.json
+│   ├── predictions/
+│   ├── artifacts/
+│   ├── splits.json
+│   └── summary.json
+├── split_seed_2027/
+│   └── ...
+└── ...
 ```
 
-`coverage.jsonl` 中的 `subject_grouped_batches=false`、`coverage_ratio=1.0`、
+每个 `split_seed_*/metrics/coverage.jsonl` 中的
+`subject_grouped_batches=false`、`coverage_ratio=1.0`、
 `duplicate_segments=0` 和 `missing_segments=0` 可用于审计片段级输入策略。
 
 ## 显存调整
