@@ -40,3 +40,6 @@ Thumbs.db
 # 训练运行产物：checkpoint、预测、日志、快照与后台任务状态
 /exp/*
 !/exp/.gitkeep
+
+# 对比用的基础模型
+/base_model/*

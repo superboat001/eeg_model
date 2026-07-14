@@ -27,6 +27,7 @@ from eeg_preprocessing import (
     segment_continuous_eeg,
     utc_now_iso,
     write_json,
+    zscore_eeg_segments,
 )
 
 
@@ -39,6 +40,9 @@ DIAGNOSIS_TO_ID = {"HC": 0, "AD": 1}
 # BrainLat 数据仅包含 AR（Argentina）和 CL（Chile）两个采集站点，均为 50 Hz 市电。
 # 该值不提供命令行覆盖，以防在同一数据集上混用不同的工频设置。
 LINE_FREQUENCY_HZ = 50.0
+
+# 与训练模型 EEGModelConfig/EEGNetConfig 的默认归一化参数保持一致。
+NORMALIZATION_EPS = 1.0e-6
 
 
 @dataclass
@@ -229,6 +233,7 @@ def process_subject(
             window_seconds=window_seconds,
             step_seconds=step_seconds,
         )
+        fragments = zscore_eeg_segments(fragments, eps=NORMALIZATION_EPS)
 
         if reference_sfreq is None:
             reference_sfreq = sampling_frequency
@@ -298,7 +303,12 @@ def build_description(
     }
     preprocessing = {
         "channel_selection": "only MNE channels typed as EEG",
-        "operation_order": ["notch_filter", "bandpass_filter"],
+        "operation_order": [
+            "notch_filter",
+            "bandpass_filter",
+            "segmentation",
+            "zscore_normalization",
+        ],
         "notch_filter": {
             "frequency_hz": LINE_FREQUENCY_HZ,
             "selection_basis": (
@@ -316,6 +326,17 @@ def build_description(
             "method": "fir",
             "phase": "zero",
             "fir_design": "firwin",
+        },
+        "zscore_normalization": {
+            "method": "amplitude_scaled_regularized_zscore",
+            "scope": "each channel within each segment independently",
+            "axis": "time",
+            "amplitude_scale": "maximum_absolute_value_along_time_axis",
+            "zero_amplitude_scale_handling": "replace_with_one",
+            "standard_deviation_ddof": 0,
+            "epsilon": NORMALIZATION_EPS,
+            "channel_mask": "all_saved_EEG_channels_are_valid",
+            "constant_channel_handling": "output_all_zeros",
         },
     }
 

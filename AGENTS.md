@@ -1,2 +1,1 @@
 使用的conda环境cgz
-不要修改model_design和data文件夹中的内容

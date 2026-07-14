@@ -166,6 +166,49 @@ def segment_continuous_eeg(
     return fragments, description
 
 
+def zscore_eeg_segments(
+    fragments: np.ndarray,
+    *,
+    eps: float = 1.0e-6,
+) -> np.ndarray:
+    """按模型中的逻辑对每个片段、每个通道沿时间维做正则化 z-score。
+
+    输入轴顺序必须为 ``(segment, channel, time)``。计算前先用时间维的最大
+    绝对幅值缩放数据，再使用总体方差（``ddof=0``）和 ``eps`` 做标准化。
+    这里的输入只包含有效 EEG 通道，等价于模型中的 ``channel_mask`` 全为真。
+    """
+    if fragments.ndim != 3:
+        raise ValueError(
+            "期望三维 EEG 片段数据 (segment, channel, time)，"
+            f"实际 shape 为 {fragments.shape}。"
+        )
+    if fragments.shape[-1] == 0:
+        raise ValueError("EEG 片段的时间维不能为空。")
+    if not np.issubdtype(fragments.dtype, np.number):
+        raise TypeError(f"EEG 片段必须是数值数组，实际 dtype 为 {fragments.dtype}。")
+    if np.issubdtype(fragments.dtype, np.complexfloating):
+        raise TypeError("EEG 片段必须是实数数组。")
+    if not np.isfinite(eps) or not 0.0 < eps < 0.5:
+        raise ValueError("eps 必须是 (0, 0.5) 内的有限数。")
+
+    working_fragments = (
+        fragments
+        if np.issubdtype(fragments.dtype, np.floating)
+        else fragments.astype(np.float64)
+    )
+    amplitude_scale = np.max(np.abs(working_fragments), axis=-1, keepdims=True)
+    safe_scale = np.where(
+        amplitude_scale > 0.0,
+        amplitude_scale,
+        np.ones_like(amplitude_scale),
+    )
+    scaled = working_fragments / safe_scale
+    means = np.mean(scaled, axis=-1, keepdims=True)
+    centered = scaled - means
+    variance = np.mean(np.square(centered), axis=-1, keepdims=True)
+    return centered * np.reciprocal(np.sqrt(variance + eps))
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
