@@ -25,14 +25,21 @@ conda run -n cgz python train_eeg.py
 # 覆盖随机数种子的起点和数量
 conda run -n cgz python train_eeg.py \
   --split-seed-start 2030 --split-seed-count 5
+
+# 启用或关闭模型内部按片段、按通道的 _normalize
+conda run -n cgz python train_eeg.py --normalize
+conda run -n cgz python train_eeg.py --no-normalize
 ```
 
 可以用 `--run-name` 和 `--device cuda:0` 覆盖实验名与设备。正式训练会针对每个
-数据划分分别重新初始化模型、训练和测试，最后汇总所有数值指标。SSH 后台运行
-方式：
+数据划分分别重新初始化模型、训练和测试，最后汇总所有数值指标。没有传入
+`--normalize` 或 `--no-normalize` 时，使用 JSON 中的
+`model.parameters.normalize_per_channel`（当前默认配置为 `true`）。命令行覆盖值
+会写入实验的解析配置、模型配置和 checkpoint。SSH 后台运行方式：
 
 ```bash
 ./run_eeg_background.sh
+./run_eeg_background.sh start --no-normalize
 ./run_eeg_background.sh start --split-seed-start 2030 --split-seed-count 5
 ./run_eeg_background.sh sanity
 ./run_eeg_background.sh status

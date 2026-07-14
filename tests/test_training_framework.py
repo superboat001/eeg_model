@@ -43,6 +43,8 @@ from eeg_training.runner import (
     _split_seed_sequence,
     run_experiment,
 )
+from model_design.eeg_hc_ad_model import EEGModelConfig
+from train_eeg import parse_args as parse_training_args
 
 
 class _TinySegmentModel(torch.nn.Module):
@@ -107,6 +109,83 @@ def _record(
 
 
 class TrainingFrameworkTests(unittest.TestCase):
+    def test_model_normalization_cli_is_a_tristate_override(self) -> None:
+        with patch("sys.argv", ["train_eeg.py"]):
+            self.assertIsNone(parse_training_args().normalize_per_channel)
+        with patch("sys.argv", ["train_eeg.py", "--normalize"]):
+            self.assertIs(parse_training_args().normalize_per_channel, True)
+        with patch("sys.argv", ["train_eeg.py", "--no-normalize"]):
+            self.assertIs(parse_training_args().normalize_per_channel, False)
+
+    def test_model_normalization_override_updates_resolved_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            config_file = project / "config.json"
+            config_file.write_text(
+                json.dumps(
+                    {
+                        "model": {
+                            "parameters": {"normalize_per_channel": True},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            model_source = project / "model_design" / "eeg_hc_ad_model.py"
+            model_source.parent.mkdir()
+            model_source.write_text("# test model source\n", encoding="utf-8")
+            data_info = SimpleNamespace(
+                dataset_name="toy",
+                records=[],
+                n_channels=2,
+                n_samples=8,
+                sampling_rate=128.0,
+            )
+            splits = {"train": [], "validation": [], "test": []}
+            with (
+                patch.object(runner_module, "load_dataset_info", return_value=data_info),
+                patch.object(
+                    runner_module,
+                    "stratified_subject_split",
+                    return_value=splits,
+                ),
+                patch.object(runner_module, "split_manifest", return_value={}),
+            ):
+                configured = runner_module._prepare_configuration(
+                    project_root=project,
+                    config_file=config_file,
+                    run_name=None,
+                    device_override=None,
+                )
+                overridden = runner_module._prepare_configuration(
+                    project_root=project,
+                    config_file=config_file,
+                    run_name=None,
+                    device_override=None,
+                    normalize_per_channel_override=False,
+                )
+
+            self.assertIs(
+                configured.config["model"]["parameters"][
+                    "normalize_per_channel"
+                ],
+                True,
+            )
+            self.assertIs(
+                overridden.config["model"]["parameters"][
+                    "normalize_per_channel"
+                ],
+                False,
+            )
+
+    def test_main_model_rejects_non_boolean_normalization_config(self) -> None:
+        with self.assertRaisesRegex(ValueError, "normalize_per_channel"):
+            EEGModelConfig(
+                n_channels=2,
+                sampling_rate=128.0,
+                normalize_per_channel="false",  # type: ignore[arg-type]
+            )
+
     def test_multi_split_defaults_and_metric_aggregation(self) -> None:
         self.assertEqual(DEFAULTS["data"]["split_seed_count"], 10)
         self.assertEqual(_split_seed_sequence(DEFAULTS), list(range(2026, 2036)))

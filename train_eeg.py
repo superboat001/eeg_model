@@ -52,6 +52,26 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="optional override for how many consecutive split seeds to run",
     )
+    normalization_group = parser.add_mutually_exclusive_group()
+    normalization_group.add_argument(
+        "--normalize",
+        dest="normalize_per_channel",
+        action="store_true",
+        default=None,
+        help=(
+            "enable per-segment, per-channel _normalize in the model "
+            "(overrides model.parameters.normalize_per_channel)"
+        ),
+    )
+    normalization_group.add_argument(
+        "--no-normalize",
+        dest="normalize_per_channel",
+        action="store_false",
+        help=(
+            "disable per-segment, per-channel _normalize in the model "
+            "(overrides model.parameters.normalize_per_channel)"
+        ),
+    )
     action_group = parser.add_mutually_exclusive_group()
     action_group.add_argument(
         "--check",
@@ -79,6 +99,7 @@ def main() -> int:
             device_override=args.device,
             split_seed_start=args.split_seed_start,
             split_seed_count=args.split_seed_count,
+            normalize_per_channel=args.normalize_per_channel,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
@@ -91,6 +112,7 @@ def main() -> int:
             device_override=args.device,
             split_seed_start=args.split_seed_start,
             split_seed_count=args.split_seed_count,
+            normalize_per_channel=args.normalize_per_channel,
         )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0 if summary["status"] == "sanity_overfit_passed" else 2
@@ -102,6 +124,7 @@ def main() -> int:
         device_override=args.device,
         split_seed_start=args.split_seed_start,
         split_seed_count=args.split_seed_count,
+        normalize_per_channel=args.normalize_per_channel,
     )
     print(
         json.dumps(

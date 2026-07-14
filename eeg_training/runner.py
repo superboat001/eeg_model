@@ -338,6 +338,7 @@ def _prepare_configuration(
     device_override: str | None,
     split_seed_start_override: int | None = None,
     split_seed_count_override: int | None = None,
+    normalize_per_channel_override: bool | None = None,
 ) -> PreparedConfiguration:
     project_root = project_root.resolve()
     config_file = config_file.resolve()
@@ -358,6 +359,12 @@ def _prepare_configuration(
         config["data"]["split_seed_start"] = split_seed_start_override
     if split_seed_count_override is not None:
         config["data"]["split_seed_count"] = split_seed_count_override
+    if normalize_per_channel_override is not None:
+        if not isinstance(normalize_per_channel_override, bool):
+            raise ValueError("normalize_per_channel override must be boolean")
+        config["model"]["parameters"][
+            "normalize_per_channel"
+        ] = normalize_per_channel_override
     _validate_config_values(config)
     split_seed = int(config["data"]["split_seed_start"])
 
@@ -591,6 +598,7 @@ def check_configuration(
     device_override: str | None = None,
     split_seed_start: int | None = None,
     split_seed_count: int | None = None,
+    normalize_per_channel: bool | None = None,
 ) -> dict[str, Any]:
     """Validate data/model/configuration without creating an experiment folder."""
 
@@ -601,6 +609,7 @@ def check_configuration(
         device_override,
         split_seed_start,
         split_seed_count,
+        normalize_per_channel,
     )
     model_module = load_model_module(prepared.model_source)
     edge_index, edge_weight, graph_description = build_graph(
@@ -1463,6 +1472,7 @@ def run_sanity_overfit(
     device_override: str | None = None,
     split_seed_start: int | None = None,
     split_seed_count: int | None = None,
+    normalize_per_channel: bool | None = None,
 ) -> dict[str, Any]:
     """Try to memorize a fixed set of independent real segments."""
 
@@ -1473,6 +1483,7 @@ def run_sanity_overfit(
         device_override,
         split_seed_start,
         split_seed_count,
+        normalize_per_channel,
     )
     base_name = str(prepared.config["experiment"]["name"])
     prepared.config["experiment"]["name"] = f"{base_name}_sanity_overfit"
@@ -1511,6 +1522,7 @@ def run_experiment(
     device_override: str | None = None,
     split_seed_start: int | None = None,
     split_seed_count: int | None = None,
+    normalize_per_channel: bool | None = None,
 ) -> dict[str, Any]:
     """Train one full experiment per consecutive split seed, then aggregate metrics."""
 
@@ -1521,6 +1533,7 @@ def run_experiment(
         device_override,
         split_seed_start,
         split_seed_count,
+        normalize_per_channel,
     )
     split_seeds = _split_seed_sequence(initial_prepared.config)
     base_name = str(initial_prepared.config["experiment"]["name"])

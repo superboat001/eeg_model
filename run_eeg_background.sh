@@ -12,7 +12,7 @@ COMMAND_FILE="${STATE_DIR}/latest.command"
 usage() {
     cat <<'EOF'
 Usage:
-  ./run_eeg_background.sh [start] [train_eeg.py options]
+  ./run_eeg_background.sh [start] [--normalize|--no-normalize] [train_eeg.py options]
   ./run_eeg_background.sh sanity [train_eeg.py options]
   ./run_eeg_background.sh status
   ./run_eeg_background.sh tail [lines]
@@ -21,10 +21,15 @@ Usage:
 Examples:
   ./run_eeg_background.sh
   ./run_eeg_background.sh start --device cuda:0 --run-name segments_v3
+  ./run_eeg_background.sh start --no-normalize
+  ./run_eeg_background.sh start --normalize
   ./run_eeg_background.sh start --split-seed-start 2030 --split-seed-count 10
   ./run_eeg_background.sh sanity --device cuda:0
   ./run_eeg_background.sh status
   ./run_eeg_background.sh tail 120
+
+If neither --normalize nor --no-normalize is supplied, the value in
+model.parameters.normalize_per_channel from the JSON configuration is used.
 EOF
 }
 
