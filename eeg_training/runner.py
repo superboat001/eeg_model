@@ -52,6 +52,21 @@ from .modeling import (
 )
 
 
+DATASET_PRESETS: dict[str, dict[str, str]] = {
+    "brainlat": {
+        "directory": "data/eeg/brainlat",
+        "metadata_file": "dataset_description.json",
+        "montage": "biosemi128",
+    },
+    "adftd": {
+        "directory": "data/eeg/adftd-rs",
+        "metadata_file": "dataset_description.json",
+        "montage": "standard_1020",
+    },
+}
+DATASET_ALIASES = {"adftd-rs": "adftd"}
+
+
 DEFAULTS: dict[str, Any] = {
     "schema_version": "3.0",
     "experiment": {
@@ -155,6 +170,24 @@ def _project_path(project_root: Path, value: str) -> Path:
     if not path.is_absolute():
         path = project_root / path
     return path.resolve()
+
+
+def _apply_dataset_override(config: dict[str, Any], dataset: str) -> str:
+    requested = str(dataset).strip().lower()
+    canonical = DATASET_ALIASES.get(requested, requested)
+    if canonical not in DATASET_PRESETS:
+        supported = ", ".join(sorted((*DATASET_PRESETS, *DATASET_ALIASES)))
+        raise ValueError(
+            f"unknown dataset {dataset!r}; supported datasets: {supported}"
+        )
+
+    preset = DATASET_PRESETS[canonical]
+    config["data"]["directory"] = preset["directory"]
+    config["data"]["metadata_file"] = preset["metadata_file"]
+    graph = config["model"]["graph"]
+    if graph.get("type") == "standard_montage_knn":
+        graph["montage"] = preset["montage"]
+    return canonical
 
 
 def _positive_int(value: Any, name: str, allow_zero: bool = False) -> int:
@@ -339,6 +372,7 @@ def _prepare_configuration(
     split_seed_start_override: int | None = None,
     split_seed_count_override: int | None = None,
     normalize_per_channel_override: bool | None = None,
+    dataset_override: str | None = None,
 ) -> PreparedConfiguration:
     project_root = project_root.resolve()
     config_file = config_file.resolve()
@@ -365,6 +399,9 @@ def _prepare_configuration(
         config["model"]["parameters"][
             "normalize_per_channel"
         ] = normalize_per_channel_override
+    selected_dataset = None
+    if dataset_override is not None:
+        selected_dataset = _apply_dataset_override(config, dataset_override)
     _validate_config_values(config)
     split_seed = int(config["data"]["split_seed_start"])
 
@@ -393,6 +430,7 @@ def _prepare_configuration(
         "metadata_file": str(metadata_file),
         "model_source_file": str(model_source),
         "dataset_name": data_info.dataset_name,
+        "dataset_selector": selected_dataset,
         "n_subjects": len(data_info.records),
         "n_segments": sum(record.n_segments for record in data_info.records),
         "n_channels": data_info.n_channels,
@@ -599,6 +637,7 @@ def check_configuration(
     split_seed_start: int | None = None,
     split_seed_count: int | None = None,
     normalize_per_channel: bool | None = None,
+    dataset: str | None = None,
 ) -> dict[str, Any]:
     """Validate data/model/configuration without creating an experiment folder."""
 
@@ -610,6 +649,7 @@ def check_configuration(
         split_seed_start,
         split_seed_count,
         normalize_per_channel,
+        dataset,
     )
     model_module = load_model_module(prepared.model_source)
     edge_index, edge_weight, graph_description = build_graph(
@@ -1473,6 +1513,7 @@ def run_sanity_overfit(
     split_seed_start: int | None = None,
     split_seed_count: int | None = None,
     normalize_per_channel: bool | None = None,
+    dataset: str | None = None,
 ) -> dict[str, Any]:
     """Try to memorize a fixed set of independent real segments."""
 
@@ -1484,6 +1525,7 @@ def run_sanity_overfit(
         split_seed_start,
         split_seed_count,
         normalize_per_channel,
+        dataset,
     )
     base_name = str(prepared.config["experiment"]["name"])
     prepared.config["experiment"]["name"] = f"{base_name}_sanity_overfit"
@@ -1523,6 +1565,7 @@ def run_experiment(
     split_seed_start: int | None = None,
     split_seed_count: int | None = None,
     normalize_per_channel: bool | None = None,
+    dataset: str | None = None,
 ) -> dict[str, Any]:
     """Train one full experiment per consecutive split seed, then aggregate metrics."""
 
@@ -1534,6 +1577,7 @@ def run_experiment(
         split_seed_start,
         split_seed_count,
         normalize_per_channel,
+        dataset,
     )
     split_seeds = _split_seed_sequence(initial_prepared.config)
     base_name = str(initial_prepared.config["experiment"]["name"])

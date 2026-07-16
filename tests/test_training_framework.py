@@ -37,6 +37,7 @@ import eeg_training.metrics as metrics_module
 import eeg_training.runner as runner_module
 from eeg_training.modeling import load_model_module
 from eeg_training.runner import (
+    DATASET_PRESETS,
     DEFAULTS,
     _aggregate_numeric_metrics,
     _physiology_weight,
@@ -109,6 +110,66 @@ def _record(
 
 
 class TrainingFrameworkTests(unittest.TestCase):
+    def test_dataset_cli_is_an_optional_override(self) -> None:
+        with patch("sys.argv", ["train_eeg.py"]):
+            self.assertIsNone(parse_training_args().dataset)
+        with patch("sys.argv", ["train_eeg.py", "--dataset", "brainlat"]):
+            self.assertEqual(parse_training_args().dataset, "brainlat")
+        with patch("sys.argv", ["train_eeg.py", "--dataset", "adftd"]):
+            self.assertEqual(parse_training_args().dataset, "adftd")
+
+    def test_dataset_override_updates_data_and_montage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            config_file = project / "config.json"
+            config_file.write_text("{}", encoding="utf-8")
+            model_source = project / "model_design" / "eeg_hc_ad_model.py"
+            model_source.parent.mkdir()
+            model_source.write_text("# test model source\n", encoding="utf-8")
+            data_info = SimpleNamespace(
+                dataset_name="adftd-rs",
+                records=[],
+                n_channels=19,
+                n_samples=500,
+                sampling_rate=500.0,
+            )
+            splits = {"train": [], "validation": [], "test": []}
+            with (
+                patch.object(
+                    runner_module, "load_dataset_info", return_value=data_info
+                ) as load_info,
+                patch.object(
+                    runner_module,
+                    "stratified_subject_split",
+                    return_value=splits,
+                ),
+                patch.object(runner_module, "split_manifest", return_value={}),
+            ):
+                prepared = runner_module._prepare_configuration(
+                    project_root=project,
+                    config_file=config_file,
+                    run_name=None,
+                    device_override=None,
+                    dataset_override="adftd",
+                )
+
+            preset = DATASET_PRESETS["adftd"]
+            expected_directory = (project / preset["directory"]).resolve()
+            load_info.assert_called_once_with(
+                expected_directory,
+                expected_directory / preset["metadata_file"],
+            )
+            self.assertEqual(
+                prepared.config["data"]["directory"], preset["directory"]
+            )
+            self.assertEqual(
+                prepared.config["model"]["graph"]["montage"],
+                "standard_1020",
+            )
+            self.assertEqual(
+                prepared.config["resolved"]["dataset_selector"], "adftd"
+            )
+
     def test_model_normalization_cli_is_a_tristate_override(self) -> None:
         with patch("sys.argv", ["train_eeg.py"]):
             self.assertIsNone(parse_training_args().normalize_per_channel)

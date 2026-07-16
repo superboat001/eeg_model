@@ -20,6 +20,7 @@ Usage:
 
 Examples:
   ./run_eeg_background.sh
+  ./run_eeg_background.sh start --dataset adftd
   ./run_eeg_background.sh start --device cuda:0 --run-name segments_v3
   ./run_eeg_background.sh start --no-normalize
   ./run_eeg_background.sh start --normalize

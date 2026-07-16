@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 
 from eeg_training.runner import (
+    DATASET_ALIASES,
+    DATASET_PRESETS,
     check_configuration,
     run_experiment,
     run_sanity_overfit,
@@ -39,6 +41,15 @@ def parse_args() -> argparse.Namespace:
         "--device",
         default=None,
         help="optional device override, for example cpu, cuda:0, or auto",
+    )
+    parser.add_argument(
+        "--dataset",
+        choices=tuple(sorted((*DATASET_PRESETS, *DATASET_ALIASES))),
+        default=None,
+        help=(
+            "optional dataset override; adftd selects the ADFTD-RS dataset "
+            "(default: use data.directory from the JSON configuration)"
+        ),
     )
     parser.add_argument(
         "--split-seed-start",
@@ -100,6 +111,7 @@ def main() -> int:
             split_seed_start=args.split_seed_start,
             split_seed_count=args.split_seed_count,
             normalize_per_channel=args.normalize_per_channel,
+            dataset=args.dataset,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
@@ -113,6 +125,7 @@ def main() -> int:
             split_seed_start=args.split_seed_start,
             split_seed_count=args.split_seed_count,
             normalize_per_channel=args.normalize_per_channel,
+            dataset=args.dataset,
         )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0 if summary["status"] == "sanity_overfit_passed" else 2
@@ -125,6 +138,7 @@ def main() -> int:
         split_seed_start=args.split_seed_start,
         split_seed_count=args.split_seed_count,
         normalize_per_channel=args.normalize_per_channel,
+        dataset=args.dataset,
     )
     print(
         json.dumps(

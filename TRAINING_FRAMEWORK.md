@@ -1,6 +1,6 @@
 # EEG 独立片段训练与结果框架
 
-框架读取现有 `data/eeg/brainlat/*.npy` 与
+框架可以读取 `data/eeg/brainlat/*.npy` 或 `data/eeg/adftd-rs/*.npy` 与各自的
 `dataset_description.json`，动态加载
 `model_design/eeg_hc_ad_model.py`。训练输入已经与当前模型保持一致：一个 batch
 是形状为 `[N, C, T]` 的独立片段集合，不包含被试 ID，也没有同被试 bag 或片段
@@ -15,6 +15,10 @@
 ```bash
 # 1. 只读检查数据、划分、图、模型和损失配置
 conda run -n cgz python train_eeg.py --check
+
+# 检查或训练 ADFTD-RS；未指定时沿用配置文件中的 BrainLat
+conda run -n cgz python train_eeg.py --dataset adftd --check
+conda run -n cgz python train_eeg.py --dataset adftd
 
 # 2. 在固定的小规模真实片段集合上做过拟合诊断
 conda run -n cgz python train_eeg.py --sanity-overfit
@@ -31,7 +35,11 @@ conda run -n cgz python train_eeg.py --normalize
 conda run -n cgz python train_eeg.py --no-normalize
 ```
 
-可以用 `--run-name` 和 `--device cuda:0` 覆盖实验名与设备。正式训练会针对每个
+可以用 `--dataset brainlat` 或 `--dataset adftd` 选择数据集，也可以用
+`adftd-rs` 作为后者的别名。命令行数据集参数会覆盖配置中的数据目录和元数据
+文件，并为 BrainLat/ADFTD-RS 分别选择 `biosemi128`/`standard_1020` montage。
+未传入 `--dataset` 时仍使用 JSON 中的 `data.directory`。可以用 `--run-name` 和
+`--device cuda:0` 覆盖实验名与设备。正式训练会针对每个
 数据划分分别重新初始化模型、训练和测试，最后汇总所有数值指标。没有传入
 `--normalize` 或 `--no-normalize` 时，使用 JSON 中的
 `model.parameters.normalize_per_channel`（当前默认配置为 `true`）。命令行覆盖值
@@ -39,6 +47,7 @@ conda run -n cgz python train_eeg.py --no-normalize
 
 ```bash
 ./run_eeg_background.sh
+./run_eeg_background.sh start --dataset adftd
 ./run_eeg_background.sh start --no-normalize
 ./run_eeg_background.sh start --split-seed-start 2030 --split-seed-count 5
 ./run_eeg_background.sh sanity
